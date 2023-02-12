@@ -1,0 +1,472 @@
+---
+title: "Geospatial EDA"
+---
+
+# LIBRARIES
+```{r setup, include=FALSE}
+# api connect
+library(httr)
+
+# sql connect
+library(odbc)
+library(DBI)
+library(arrow)
+
+# core packages
+library(tidyverse)
+library(dbplyr)
+library(timetk)
+library(tidyquant)
+library(janitor)
+library(lubridate)
+library(zoo)
+
+# get data
+library(fredr)
+library(tidycensus)
+
+# visualization
+library(gt)
+library(scales)
+library(plotly)
+library(vip)
+library(patchwork)
+library(ggrepel)
+library(ggraph)
+library(ggthemes)
+library(gganimate)
+library(GGally)
+library(colourvalues)
+
+# time series ml
+library(tidymodels)
+library(modeltime)
+library(modeltime.ensemble)
+library(modeltime.resample)
+library(prophet)
+library(rules)
+library(trelliscopejs)
+library(ranger)
+library(randomForest)
+library(recipes)
+library(kknn)
+library(Cubist)
+
+# Timing & Parallel Processing
+library(future)
+library(doFuture)
+library(parallel)
+library(blastula)
+library(bundle)
+
+# geocoding
+library(tidygeocoder)
+library(leaflet)
+library(leafgl)
+library(mapview)
+library(sf)
+library(tigris)
+
+# eda
+library(skimr)
+
+
+date <- today()
+options(scipen = 9999)
+
+
+SQL_ID  <- Sys.getenv("SQL_ID")
+SQL_PWD <- Sys.getenv("SQL_PWD")
+
+conn <- dbConnect(RMariaDB::MariaDB(),
+                 host = "rented-datascience.ccem57tyvghb.us-west-2.rds.amazonaws.com",
+                 username = SQL_ID,
+                 password = SQL_PWD,
+                 dbname = "rented_art")
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+
+# 0.0 DATA IMPORT
+http://insideairbnb.com/get-the-data/
+```{r}
+ca_listings_raw_1 <- read_csv("00_data/listings (1).csv.gz")
+ca_listings_raw_2 <- read_csv("00_data/listings (2).csv.gz")
+ca_listings_raw_3 <- read_csv("00_data/listings (3).csv.gz")
+ca_listings_raw_4 <- read_csv("00_data/listings (4).csv.gz")
+ca_listings_raw_5 <- read_csv("00_data/listings (5).csv.gz")
+ca_listings_raw_6 <- read_csv("00_data/listings (6).csv.gz")
+ca_listings_raw_7 <- read_csv("00_data/listings (7).csv.gz")
+ca_listings_raw_8 <- read_csv("00_data/listings.csv.gz")
+
+
+
+ca_listings_full_raw <- bind_rows(ca_listings_raw_1, ca_listings_raw_2, ca_listings_raw_3, ca_listings_raw_4, ca_listings_raw_5, ca_listings_raw_6, ca_listings_raw_7, ca_listings_raw_8)
+
+
+
+n_distinct(ca_listings_full_raw$id)
+```
+
+
+
+
+
+# 1.0 EDA
+```{r}
+dbListTables(conn)
+
+
+# available == 1, you CAN rent it.
+combined_calendar <- dbGetQuery(con, 'SELECT * FROM combined_calendar LIMIT 1000')
+combined_listings <- dbGetQuery(con, 'SELECT * FROM combined_listings LIMIT 1000')
+combined_active   <- dbGetQuery(con, 'SELECT * FROM combined_active LIMIT 1000')
+```
+
+
+
+
+# 2.0 SQL
+## Count rows
+```{sql connection=conn, output.var="count_listings"}
+select count(listing_id) as count_id
+from combined_listings
+```
+
+```{r}
+count_listings
+```
+
+
+
+## SQL Listings Export
+```{sql connection=conn, output.var="listings_raw"}
+select *
+from combined_listings
+where state in ("CA")
+and country="US"
+limit 100
+```
+
+```{r}
+listings_raw
+```
+
+
+
+## SQL Calendar Export
+```{sql connection=conn, output.var="calendar_raw"}
+select *
+from combined_calendar
+limit 10
+```
+
+```{r}
+calendar_raw
+```
+
+
+
+## SQL left_join Calendar+Listings
+```{sql connection=conn, output.var="calendar_listings_raw"}
+select *
+from combined_calendar as c
+left join combined_listings as l
+on c.listing_id = l.listing_id
+where state in ("CA")
+and country="US"
+limit 50000
+```
+
+```{r}
+n_distinct(calendar_listings_raw$listing_id)
+```
+
+
+
+## Disconnect SQL
+```{r}
+dbDisconnect(conn)
+```
+
+
+
+## Save as parquet
+```{r}
+arrow::write_parquet(calendar_listings_raw, "00_data/calendar_listings_raw.parquet")
+calendar_listings_raw <- read_parquet("00_data/calendar_listings_raw.parquet")
+```
+
+
+
+
+
+# 3.0 PREPARE DATA
+```{r}
+calendar_listings_prepared_tbl <- calendar_listings_raw %>%
+  
+  select(-listing_id..5, -postal_code, -country, -user_id, -location) %>%
+  as_tibble()
+    
+  # # new character column for priceRange... automated.
+  # unite('priceRange', min_price_by_rank:max_price_by_rank, sep = "-", remove = T) %>% 
+  # relocate(priceRange) %>%
+  # arrange(price_rank) %>%
+  # mutate(priceRange = as_factor(priceRange)) %>%
+  
+  # # clean bed/bath columns
+  # mutate(bathrooms = str_split_i(bathrooms_text, " ", 1) %>% as.numeric() %>% round_half_up(),
+  #        bedrooms = ifelse(is.na(bedrooms), 0, bedrooms)) %>%
+  # drop_na(bathrooms) %>%
+  # select(-bathrooms_text)
+```
+
+
+## Basic Map
+```{r}
+calendar_listings_prepared_tbl %>%
+  group_by(listing_id, longitude, latitude) %>%
+  summarize(n = n()) %>%
+  ggplot(aes(longitude, latitude)) +
+  geom_point() +
+  scale_fill_viridis_c() +
+  borders("state") +
+  theme_map() +
+  coord_map() +
+  labs(title = "Rental Listings")
+  
+```
+
+
+
+
+# 4.0 MAPVIEW
+## Listings Locations
+```{r}
+# convert to simple features
+listings_prepared_sf <- calendar_listings_prepared_tbl %>%
+  group_by(listing_id, latitude, longitude) %>%
+  summarise(days_of_data = n(),
+            mean_rate = mean(rate)) %>%
+  select(longitude, latitude, mean_rate) %>%
+  ungroup() %>%
+  st_as_sf(
+    coords = c("longitude", "latitude"),
+    crs    = 4326
+  )
+  
+
+listings_prepared_sf %>%
+  mapview(
+    cex           = "mean_rate",
+    col.regions   = "yellow",
+    alpha.regions = 0.5
+  )
+```
+
+
+
+
+## Leaflet Example
+x.x Not Run, but 1m data points
+```{r, eval=FALSE}
+n = 1e6
+df1 = data.frame(id = 1:n,
+                 x = rnorm(n, 10, 3),
+                 y = rnorm(n, 49, 1.8))
+
+pts = st_as_sf(df1, coords = c("x", "y"), crs = 4326)
+cols = colour_values_rgb(pts$id, include_alpha = FALSE) / 255
+
+leaflet() %>%
+  addProviderTiles(provider = providers$CartoDB.DarkMatter) %>%
+  addGlPoints(data = pts, fillColor = cols, group = "pts")
+```
+
+
+
+
+
+# VISUALIZE BY COUNTY
+## Shape files
+x.x Not Run: data already saved for USA Counties
+```{r, eval=FALSE}
+### CALIFORNIA COUNTIES SHAPE FILES ###
+ca_counties_sf <- tigris::counties(state = "CA") %>% st_set_crs(4326)
+
+# save as rds
+write_rds(ca_counties_sf, "01_geospatial/ca_shapefiles.rds")
+
+# visualize
+ca_counties_sf %>% mapview(col.regions = "yellow", col = "white")
+
+
+
+
+
+### USA COUNTIES SHAPE FILES ###
+usa_counties_sf <- tigris::counties(cb = TRUE) %>% st_transform(crs = 4326)
+
+# save as rds
+write_rds(usa_counties_sf, "01_geospatial/usa_counties_shapefiles.rds")
+
+# visualize
+usa_counties_sf %>% mapview(col.regions = "yellow", col = "white")
+```
+
+
+## Locations by County
+```{r}
+### USA HOSTS BY COUNTY ###
+listings_by_county_sf <- listings_prepared_sf %>%
+    
+    # spatial join: which points intersect, and drop_na() to only show California
+    st_join(ca_counties_sf %>% select(GEOID)) %>%
+    drop_na() %>%
+    
+    # convert to tibble and summarize by GEOID
+    as_tibble() %>%
+    group_by(GEOID) %>%
+    summarize(count = n(), 
+              .groups = 'drop') %>%
+    ungroup() %>%
+    
+    # join by GEOID and convert back to sf
+    right_join(ca_counties_sf, by = "GEOID") %>%
+    select(GEOID:count, 
+           NAME, 
+           # STATE_NAME, 
+           geometry) %>%
+    st_as_sf(crs = 4326)
+
+
+# save rds
+write_rds(listings_by_county_sf, "01_geospatial/ca_by_county_sf.rds")
+
+
+
+
+### VISUALIZE ###
+# visualize median number of hosts
+listings_by_county_sf %>%
+    mapview(
+        zcol       = "count",
+        color      = "white",
+        layer.name = "Number of Listings"
+    )
+```
+
+
+## K-Mean Clustering
+```{r}
+# create tibble for California only
+ca_host_locations_geocode_sf <- listings_prepared_sf %>%
+    st_join(ca_counties_sf %>% select(GEOID)) %>%
+    drop_na() %>%
+    select(-GEOID) 
+
+
+set.seed(123)
+kmeans_obj <- ca_host_locations_geocode_sf %>%
+    st_coordinates() %>%
+    as_tibble() %>%
+    kmeans(centers = 4, nstart = 20)
+
+
+ca_host_locations_geocode_sf %>%
+    mutate(cluster = kmeans_obj$cluster %>% factor()) %>%
+    mapview(
+        zcol       = "cluster",
+        cex        = "mean_rate",
+        color      = "white",
+        layer.name = "Geospatial Segments"
+    )
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Writing table to MariaDB
+Make sure you check with Thomas to get write-access.
+```{r}
+
+# naming convention:
+# ds_forecast_ca_usa
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

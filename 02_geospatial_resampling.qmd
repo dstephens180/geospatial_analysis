@@ -1,0 +1,182 @@
+---
+title: "Geospatial EDA"
+---
+
+# LIBRARIES
+```{r setup, include=FALSE}
+# api connect
+library(httr)
+
+# sql connect
+library(odbc)
+library(DBI)
+library(arrow)
+
+# core packages
+library(tidyverse)
+library(dbplyr)
+library(timetk)
+library(tidyquant)
+library(janitor)
+library(lubridate)
+library(zoo)
+
+# get data
+library(fredr)
+library(tidycensus)
+
+# visualization
+library(gt)
+library(scales)
+library(plotly)
+library(vip)
+library(patchwork)
+library(ggrepel)
+library(ggraph)
+library(ggthemes)
+library(gganimate)
+library(GGally)
+library(colourvalues)
+
+# time series ml
+library(tidymodels)
+library(modeltime)
+library(modeltime.ensemble)
+library(modeltime.resample)
+library(prophet)
+library(rules)
+library(trelliscopejs)
+library(ranger)
+library(randomForest)
+library(recipes)
+library(kknn)
+library(Cubist)
+
+# Timing & Parallel Processing
+library(future)
+library(doFuture)
+library(parallel)
+library(blastula)
+library(bundle)
+
+# geocoding
+library(tidygeocoder)
+library(leaflet)
+library(leafgl)
+library(mapview)
+library(sf)
+library(tigris)
+
+# eda
+library(skimr)
+
+
+date <- today()
+options(scipen = 9999)
+
+
+SQL_ID  <- Sys.getenv("SQL_ID")
+SQL_PWD <- Sys.getenv("SQL_PWD")
+
+conn <- dbConnect(RMariaDB::MariaDB(),
+                 host = "rented-datascience.ccem57tyvghb.us-west-2.rds.amazonaws.com",
+                 username = SQL_ID,
+                 password = SQL_PWD,
+                 dbname = "rented_art")
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

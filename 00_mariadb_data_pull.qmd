@@ -1,0 +1,132 @@
+---
+title: "MariaDB Data Pull"
+---
+
+# LIBRARIES
+```{r setup, include=FALSE}
+# sql connect
+library(odbc)
+library(DBI)
+library(arrow)
+
+# core packages
+library(tidyverse)
+library(dbplyr)
+library(timetk)
+library(tidyquant)
+library(janitor)
+library(lubridate)
+library(zoo)
+
+# get data
+library(fredr)
+library(tidycensus)
+
+
+date <- today()
+options(scipen = 9999)
+
+
+SQL_ID  <- Sys.getenv("SQL_ID")
+SQL_PWD <- Sys.getenv("SQL_PWD")
+
+conn <- dbConnect(RMariaDB::MariaDB(),
+                 host = "rented-datascience.ccem57tyvghb.us-west-2.rds.amazonaws.com",
+                 username = SQL_ID,
+                 password = SQL_PWD,
+                 dbname = "rented_art")
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+
+
+
+# 1.0 EDA
+```{r}
+dbListTables(conn)
+
+
+# available == 1, you CAN rent it.
+combined_calendar <- dbGetQuery(conn, 'SELECT * FROM combined_calendar LIMIT 1000')
+combined_listings <- dbGetQuery(conn, 'SELECT * FROM combined_listings LIMIT 1000')
+combined_active   <- dbGetQuery(conn, 'SELECT * FROM combined_active LIMIT 1000')
+```
+
+
+
+
+# 2.0 SQL
+## Count rows
+```{sql connection=conn, output.var="count_listings"}
+select count(listing_id) as count_id
+from combined_listings
+where country = "US"
+```
+
+```{r}
+count_listings
+```
+
+
+
+## SQL Listings Export
+```{sql connection=conn, output.var="listings_raw"}
+select *
+from combined_listings
+where country="US"
+limit 7000
+```
+
+```{r}
+listings_raw
+```
+
+
+
+## SQL Calendar Export
+```{sql connection=conn, output.var="calendar_raw"}
+select *
+from combined_calendar
+limit 10
+```
+
+```{r}
+calendar_raw
+```
+
+
+
+## SQL left_join Calendar+Listings
+```{sql connection=conn, output.var="calendar_listings_raw"}
+select *
+from combined_calendar as c
+left join combined_listings as l
+on c.listing_id = l.listing_id
+where state in ("CA")
+and country="US"
+limit 50000
+```
+
+```{r}
+n_distinct(calendar_listings_raw$listing_id)
+```
+
+
+
+## Disconnect SQL
+```{r}
+dbDisconnect(conn)
+```
+
+
+
+## Save as parquet
+```{r}
+arrow::write_parquet(calendar_listings_raw, "00_data/calendar_listings_raw.parquet")
+calendar_listings_raw <- read_parquet("00_data/calendar_listings_raw.parquet")
+```
+
+
