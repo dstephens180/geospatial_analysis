@@ -75,14 +75,17 @@ date <- today()
 options(scipen = 9999)
 
 
-SQL_ID  <- Sys.getenv("SQL_ID")
-SQL_PWD <- Sys.getenv("SQL_PWD")
+DS_HOST    <- Sys.getenv("DS_HOST")
+DS_DB_NAME <- Sys.getenv("DS_DB_NAME")
+SQL_ID     <- Sys.getenv("SQL_ID")
+SQL_PW     <- Sys.getenv("SQL_PW")
+
 
 conn <- dbConnect(RMariaDB::MariaDB(),
-                 host = "rented-datascience.ccem57tyvghb.us-west-2.rds.amazonaws.com",
-                 username = SQL_ID,
-                 password = SQL_PWD,
-                 dbname = "rented_art")
+                  host     = DS_HOST,
+                  dbname   = DS_DB_NAME,
+                  username = SQL_ID,
+                  password = SQL_PW)
 
 knitr::opts_chunk$set(echo = TRUE)
 ```
@@ -112,91 +115,8 @@ n_distinct(ca_listings_full_raw$id)
 ```
 
 
-
-
-
-# 1.0 EDA
+## MariaDB Data
 ```{r}
-dbListTables(conn)
-
-
-# available == 1, you CAN rent it.
-combined_calendar <- dbGetQuery(con, 'SELECT * FROM combined_calendar LIMIT 1000')
-combined_listings <- dbGetQuery(con, 'SELECT * FROM combined_listings LIMIT 1000')
-combined_active   <- dbGetQuery(con, 'SELECT * FROM combined_active LIMIT 1000')
-```
-
-
-
-
-# 2.0 SQL
-## Count rows
-```{sql connection=conn, output.var="count_listings"}
-select count(listing_id) as count_id
-from combined_listings
-```
-
-```{r}
-count_listings
-```
-
-
-
-## SQL Listings Export
-```{sql connection=conn, output.var="listings_raw"}
-select *
-from combined_listings
-where state in ("CA")
-and country="US"
-limit 100
-```
-
-```{r}
-listings_raw
-```
-
-
-
-## SQL Calendar Export
-```{sql connection=conn, output.var="calendar_raw"}
-select *
-from combined_calendar
-limit 10
-```
-
-```{r}
-calendar_raw
-```
-
-
-
-## SQL left_join Calendar+Listings
-```{sql connection=conn, output.var="calendar_listings_raw"}
-select *
-from combined_calendar as c
-left join combined_listings as l
-on c.listing_id = l.listing_id
-where state in ("CA")
-and country="US"
-limit 50000
-```
-
-```{r}
-n_distinct(calendar_listings_raw$listing_id)
-```
-
-
-
-## Disconnect SQL
-```{r}
-dbDisconnect(conn)
-```
-
-
-
-## Save as parquet
-```{r}
-arrow::write_parquet(calendar_listings_raw, "00_data/calendar_listings_raw.parquet")
 calendar_listings_raw <- read_parquet("00_data/calendar_listings_raw.parquet")
 ```
 
@@ -204,7 +124,7 @@ calendar_listings_raw <- read_parquet("00_data/calendar_listings_raw.parquet")
 
 
 
-# 3.0 PREPARE DATA
+# 1.0 PREPARE DATA
 ```{r}
 calendar_listings_prepared_tbl <- calendar_listings_raw %>%
   
@@ -243,7 +163,7 @@ calendar_listings_prepared_tbl %>%
 
 
 
-# 4.0 MAPVIEW
+# 2.0 MAPVIEW
 ## Listings Locations
 ```{r}
 # convert to simple features
@@ -360,23 +280,23 @@ listings_by_county_sf %>%
 ```
 
 
-## K-Mean Clustering
+## K-Means Clustering
 ```{r}
 # create tibble for California only
-ca_host_locations_geocode_sf <- listings_prepared_sf %>%
-    st_join(ca_counties_sf %>% select(GEOID)) %>%
+geocode_sf <- listings_prepared_sf %>%
+    st_join(usa_counties_sf %>% select(GEOID)) %>%
     drop_na() %>%
     select(-GEOID) 
 
 
 set.seed(123)
-kmeans_obj <- ca_host_locations_geocode_sf %>%
+kmeans_obj <- geocode_sf %>%
     st_coordinates() %>%
     as_tibble() %>%
     kmeans(centers = 4, nstart = 20)
 
 
-ca_host_locations_geocode_sf %>%
+geocode_sf %>%
     mutate(cluster = kmeans_obj$cluster %>% factor()) %>%
     mapview(
         zcol       = "cluster",

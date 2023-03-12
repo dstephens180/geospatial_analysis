@@ -1,0 +1,188 @@
+---
+title: "Geo Spatial Analysis"
+output:
+    flexdashboard::flex_dashboard:
+        orientation: columns
+        theme: 
+            version: 4
+            bg: "#FFFFFF"
+            fg: "#000000" 
+            primary: "#a087ae"
+            navbar-bg: "#a087ae"
+            base_font: 
+                google: Montserrat
+            heading_font:
+                google: Montserrat
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(tidyverse)
+library(tidyquant)
+library(plotly)
+library(odbc)
+library(lubridate)
+library(shiny)
+library(shinyWidgets)
+library(DT)
+library(tidyverse)
+library(tidyquant)
+library(here)
+library(plotly)
+library(timetk)
+library(shiny)
+library(ggplot2)
+library(bslib)
+library(mapview)
+library(leaflet)
+library(sf)
+source("C:\\Users\\Dave\\Desktop\\GitHub\\vacation-rental-analysis\\shiny-themes\\theme_light.R")
+```
+
+
+```{r}
+# SCRIPTS ----
+source("C:\\Users\\Dave\\Desktop\\GitHub\\vacation-rental-analysis\\shiny-themes\\theme_light.R")
+
+
+# DATA ----
+ca_hosts_by_county_sf  <- read_rds("C:\\Users\\Dave\\Desktop\\GitHub\\vacation-rental-analysis\\01_geospatial\\hosts_by_ca_county_sf.rds")
+usa_hosts_by_county_sf <- read_rds("C:\\Users\\Dave\\Desktop\\GitHub\\vacation-rental-analysis\\01_geospatial\\usa_hosts_by_county_sf.rds")
+
+
+# MAPS ----
+map_median_hosts <- usa_hosts_by_county_sf %>%
+    mapview(
+        zcol       = "median_hosts",
+        color      = "white",
+        layer.name = "Median Hosts")
+
+map_total_hosts <- usa_hosts_by_county_sf %>%
+    mapview(
+        zcol       = "sum_hosts",
+        color      = "white",
+        layer.name = "Total Hosts")
+```
+
+
+
+
+<!-- Column {.sidebar} -->
+<!-- ------------------------ -->
+<!-- ```{r} -->
+<!-- dateRangeInput(inputId = "date_range", -->
+<!--                label = h4("Date Range"), -->
+<!--                start = '2022-01-01', -->
+<!--                end   = today(), -->
+<!--                min   = as_date("2020-01-01"), -->
+<!--                max   = as_date(today()), -->
+<!--                startview = "month") -->
+
+<!-- pickerInput(inputId = "select_tienda", -->
+<!--             label = h4("Select Store"), -->
+<!--             choices = unique_tienda, -->
+<!--             selected = unique_tienda, -->
+<!--             multiple = TRUE, -->
+<!--             options  = list(`actions-box` = TRUE, -->
+<!--                             size = 10, -->
+<!--                             `selected-text-format` = "count > 3")) -->
+
+<!-- pickerInput(inputId = "select_owner", -->
+<!--             label = h4("Select Owner"), -->
+<!--             choices = unique_owner, -->
+<!--             selected = unique_owner, -->
+<!--             multiple = TRUE, -->
+<!--             options  = list(`actions-box` = TRUE, -->
+<!--                             size = 10, -->
+<!--                             `selected-text-format` = "count > 3")) -->
+<!-- br() -->
+<!-- hr() -->
+<!-- br() -->
+
+<!-- # reset button -->
+<!-- actionButton(inputId = "reset", -->
+<!--              label = "Reset", -->
+<!--              icon = icon("sync")) -->
+
+<!-- observeEvent(eventExpr = input$reset, handlerExpr = { -->
+<!--   updateDateRangeInput(session = session, -->
+<!--                        inputId = "date_range", -->
+<!--                        start = '2022-01-01', -->
+<!--                        end = today()) -->
+
+<!--   updatePickerInput(session = session, -->
+<!--                     inputId = "select_tienda", -->
+<!--                     selected = unique_tienda) -->
+
+<!--   updatePickerInput(session  = session, -->
+<!--                     inputId  = "select_owner", -->
+<!--                     selected = unique_owner) -->
+<!-- }) -->
+<!-- ``` -->
+
+
+
+Column {data-width=1000}
+-----------------------
+```{r}
+# reactive
+# full_dataset_filtered <- reactive({
+#   full_dataset_tbl %>%
+#     filter(tienda %in% input$select_tienda) %>%
+#     filter(owner %in% input$select_owner) %>%
+#     filter(date %>% between(left = ymd(input$date_range[1]),
+#                             right = ymd(input$date_range[2])))
+# })
+```
+
+
+### Median Host Locations
+```{r}
+output$median_hosts <- renderLeaflet({
+        map_median_hosts@map
+    })
+leafletOutput(outputId = "median_hosts")
+```
+
+### Median Summary
+```{r}
+output$median_hosts_tbl <- renderDataTable({
+        usa_hosts_by_county_sf %>% 
+            as_tibble() %>%
+            select(NAME, STATE_NAME, median_hosts) %>%
+            rename(county_name = NAME,
+                   state_name  = STATE_NAME) %>%
+            arrange(desc(median_hosts))
+    })
+
+DTOutput(outputId = "median_hosts_tbl")
+```
+
+
+
+
+Column {data-width=1000}
+-----------------------
+### Total Host Locations
+```{r}
+output$total_hosts <- renderLeaflet({
+        map_total_hosts@map
+    })
+
+leafletOutput(outputId = "total_hosts")
+```
+
+### Total Summary
+```{r}
+output$total_hosts_tbl <- renderDataTable({
+        usa_hosts_by_county_sf %>% 
+            as_tibble() %>%
+            select(NAME, STATE_NAME, sum_hosts) %>%
+            rename(county_name = NAME,
+                   state_name  = STATE_NAME) %>%
+            arrange(desc(sum_hosts))
+    })
+
+DTOutput(outputId = "total_hosts_tbl")
+```

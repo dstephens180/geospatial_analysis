@@ -1,0 +1,268 @@
+---
+title: "Mapping Geospatial Networks"
+format:
+  html:
+    embed-resources: true
+editor: visual
+---
+
+# Summary
+
+What if you had to find the quickest route with multiple stops? Questions start to add up:
+
+-   What if you had multiple distribution locations?
+
+-   Which warehouse should deliver to which customer?
+
+-   Which delivery should be first?
+
+-   What roads should be taken?
+
+Businesses face this problem daily. Online stores, delivery services like Amazon, and even the restaurant industry are tasked to find the best route at the lowest cost.
+
+I randomly picked 3 warehouse locations and 95 customers in Tampa, Florida. This analysis & distribution network can be duplicated and scaled for any business and location in the world.
+
+# LIBRARIES
+
+```{r setup, include=FALSE}
+#| output: false
+library(osmdata)
+library(osrm)
+
+library(sf)
+library(nngeo)
+library(mapview)
+
+library(tidyverse)
+library(tidyquant)
+```
+
+# Data
+
+First, we read in our random sample set of customers & distributors
+
+```{r}
+
+customer_sample_set    <- read_rds("00_data/04_networks_tampa_customer_sample_set.rds")
+distributor_sample_set <- read_rds("00_data/04_networks_tampa_distributor_sample_set.rds")
+```
+
+## Bounding Box
+
+A bounding box shows the minimum & maximum coordinates of a given location. Let's see what Tampa's bounding box has.
+
+```{r}
+tampa_bbox <- getbb("Tampa, FL")
+```
+
+## Highways & Medium-Sized Streets
+
+With the bounding box coordinates we can get all OSM (Open Street Map) data for highways and other streets. Residential streets would take too long, but they can be added later.
+
+```{r}
+#| output: false
+# highways
+tampa_highways_sf <- opq(tampa_bbox) %>%
+    add_osm_feature(
+        key   = "highway", 
+        value = c("motorway", "primary", "motorway_link", "primary_link")
+    ) %>%
+    osmdata_sf() 
+
+# medium streets
+tampa_medium_streets_sf <- opq(tampa_bbox) %>%
+    add_osm_feature(
+        key   = "highway", 
+        value = c("secondary", "tertiary", "secondary_link", "tertiary_link")
+    ) %>%
+    osmdata_sf()
+
+
+
+# visualize
+mapview(
+    tampa_medium_streets_sf$osm_lines, 
+    color = "darkgreen",
+    layer.name = "Streets"
+) +
+    mapview(
+        tampa_highways_sf$osm_lines,
+        layer.name = "Highways",
+        color = "purple"
+    )
+```
+
+![](html_images/image_1.PNG)
+
+# Customers & Distribution Centers
+
+Let's add a row id and visualize the 3 distribution centers and 95 customers.
+
+-   Customers are blue
+
+-   Distributors are magenta
+
+```{r}
+#| output: false
+tampa_customers_sf <- customer_sample_set %>%
+    rowid_to_column(var = "customer_id")
+
+
+tampa_distributors_sf <- distributor_sample_set %>%
+    rowid_to_column(var = "distributor_id")
+
+```
+
+![](html_images/image_2.PNG)
+
+# Nearest Neighbors
+
+I decided to use nearest-neighbors to get the distance between locations. Alternatively we could use sfnetworks.
+
+## The Process
+
+1.  First, connect each distributors to each customer, no matter the distance. The map looks overwhelming.
+
+2.  Next, calculate the distance from each distributor to each customer. Even the farthest customer will be connected to a distributor.
+
+3.  Finally, group by the the customer and keep the shortest distance to any distributor.
+
+Now we have the best distributor for each customer.
+
+```{r}
+#| output: false
+#| echo: false
+network_tampa_ids <- st_nn(
+    x = tampa_distributors_sf,
+    y = tampa_customers_sf,
+    k = nrow(tampa_customers_sf),
+    progress = T
+)
+
+
+network_tampa_lines_sf <- st_connect(
+    x   = tampa_distributors_sf,
+    y   = tampa_customers_sf,
+    ids = network_tampa_ids
+)
+```
+
+```{r}
+#| echo: false
+#| warning: false
+nodes_tampa_tbl <- network_tampa_ids %>%
+    enframe(
+        name  = "distributor_id",
+        value = "customer_id"
+    ) %>%
+    unnest(customer_id)
+
+
+shortest_tampa_network_sf <- network_tampa_lines_sf %>%
+    st_bind_cols(nodes_tampa_tbl) %>%
+    mutate(len = st_length(geometry)) %>%
+    relocate(len, .after = customer_id) %>%
+    
+    group_by(customer_id) %>%
+    filter(len == min(len)) %>%
+    ungroup()
+```
+
+![](html_images/image_3.PNG)
+
+## Visualize Trip Points
+
+The map below color-codes each distributor to their customer.
+
+```{r}
+#| output: false
+tampa_route_points_sf <- tampa_distributors_sf %>%
+    
+  bind_rows(tampa_customers_sf) %>%
+  select(type, distributor_id, customer_id, everything()) %>%
+  
+  # Adding in the distributor that the customer belongs to
+  left_join(
+      shortest_tampa_network_sf %>% 
+          select(distributor_id, customer_id) %>%
+          as_tibble() %>%
+          rename(distributor_to = distributor_id) %>%
+          select(-geometry),
+      by   = "customer_id"
+  ) %>%
+  
+  # Cleanup distributor_to
+  mutate(distributor_to = ifelse(is.na(distributor_to), distributor_id, distributor_to)) %>%
+  mutate(distributor_to = as.factor(distributor_to))
+
+```
+
+![](html_images/image_5.PNG)
+
+# Planning the Route
+
+We use osrmTrip() to get the best route between each location for that distributor. This is our final product.
+
+```{r}
+#| echo: false
+warehouse_trips_tbl <- tampa_route_points_sf %>%
+  group_by(distributor_to) %>%
+  group_nest() %>%
+  mutate(trip = map(data, .f = osrmTrip))
+
+warehouse_trips_tbl$trip[[1]]
+
+warehouse_trips_sf <- warehouse_trips_tbl %>%
+    
+  # Double unnest
+  select(-data) %>%
+  unnest(trip) %>%
+  unnest(trip) %>%
+  
+  # Get first item
+  group_by(distributor_to) %>%
+  slice(1) %>%
+  ungroup() %>%
+  
+  # Unnest sf object and convert to sf
+  unnest(trip) %>%
+  st_as_sf()
+```
+
+![](html_images/image_6.PNG)
+
+## Estimating trip cost
+
+The National Private Truck Council (NPTC) averages \$2.90 cost per mile including gas, maintenance, insurance, etc.
+
+My estimated variables can be adjusted, but below is what I used.
+
+-   \$300 paid for each delivery truck driver
+
+-   \$2.90 cost per mile
+
+```{r}
+#| echo: false
+warehouse_trips_tbl %>%
+  
+  # Double unnest
+  select(-data) %>%
+  unnest(trip) %>%
+  unnest(trip) %>%
+  
+  # Get the 2nd item
+  group_by(distributor_to) %>%
+  slice(2) %>%
+  ungroup() %>%
+  
+  # Trick: Unnest wider
+  unnest_wider(trip) %>%
+  
+  # Add our costs
+  mutate(distance = distance * 0.621371,
+         driver_cost = 300,
+         fuel_cost_per_mile = 2.90,
+         total_cost  = distance * fuel_cost_per_mile + driver_cost) %>%
+  rename(duration_min = duration,
+         distance_miles = distance)
+```

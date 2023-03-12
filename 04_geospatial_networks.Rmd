@@ -1,0 +1,488 @@
+---
+title: "Mapping Geospatial Networks"
+---
+
+# LIBRARIES ----
+```{r setup, include=FALSE}
+library(osmdata)    # Open Street Map Overpass API
+library(osrm)       # Open Street Map Routing API
+
+library(sf)
+library(nngeo)
+library(mapview)
+
+library(tidyverse)
+library(tidyquant)
+```
+
+
+
+
+# 0.0 DATA
+## Import FL Listings
+```{r}
+fl_listings_adr_tbl <- read_rds("C:\\Users\\DavidStephens\\Desktop\\Github\\artr_replica\\00_data\\fl_listings_adr_tbl.rds")
+```
+
+
+
+
+# 1.0 OSM OVERPASS API
+```{r}
+# - Get roads, water, etc
+# - Resource: # https://wiki.openstreetmap.org/wiki/Map_features
+
+tampa_bbox <- getbb("Tampa, FL")
+?osmdata()
+
+
+# tags
+available_tags("highway") # https://wiki.openstreetmap.org/wiki/Map_features#Roads
+```
+
+
+## Getting Major Highways
+```{r}
+tampa_highways_sf <- opq(tampa_bbox) %>%
+    add_osm_feature(
+        key   = "highway", 
+        value = c("motorway", "primary", "motorway_link", "primary_link")
+    ) %>%
+    osmdata_sf() 
+
+# save & read
+tampa_highways_sf %>% write_rds("00_data/04_tampa_highways_sf.rds")
+tampa_highways_sf <- read_rds("00_data/04_tampa_highways_sf.rds")
+
+# visualize
+mapview(tampa_highways_sf$osm_lines)
+```
+
+
+## Getting Smaller roads
+```{r}
+# medium streets
+tampa_medium_streets_sf <- opq(tampa_bbox) %>%
+    add_osm_feature(
+        key   = "highway", 
+        value = c("secondary", "tertiary", "secondary_link", "tertiary_link")
+    ) %>%
+    osmdata_sf()
+
+tampa_medium_streets_sf %>% write_rds("00_data/04_tampa_medium_streets_sf.rds")
+tampa_medium_streets_sf <- read_rds("00_data/04_tampa_medium_streets_sf.rds")
+
+
+
+# visualize
+mapview(
+    tampa_medium_streets_sf$osm_lines, 
+    color = "darkgreen",
+    layer.name = "Streets"
+) +
+    mapview(
+        tampa_highways_sf$osm_lines,
+        layer.name = "Highways",
+        color = "purple"
+    )
+```
+
+
+## Residential
+x.x Not Run: too much detail for this analysis
+```{r, eval=FALSE}
+# residential
+tampa_residential_streets_sf <- opq(tampa_bbox) %>%
+    add_osm_feature(
+        key   = "highway", 
+        value = c("residential")
+    ) %>%
+    osmdata_sf()
+
+
+tampa_residential_streets_sf %>% write_rds("00_data/04_tampa_residential_streets_sf.rds")
+tampa_residential_streets_sf <- read_rds("00_data/04_tampa_residential_streets_sf.rds")
+```
+
+
+
+
+
+# 2.0 CUSTOMERS & WAREHOUSES
+## Randomize distributors
+x.x Not Run: in case randomizing needs to be done
+```{r, eval=FALSE}
+# warehouse sample set
+distributor_sample_set <- fl_listings_adr_tbl %>%
+  
+  # filter within bounding box
+  filter(between(longitude, tampa_bbox[1,1], tampa_bbox[1,2]),
+         between(latitude, tampa_bbox[2,1], tampa_bbox[2,2])) %>%
+  
+  # random sample size
+  sample_n(size = 3) %>%
+  select(listing_id, longitude, latitude) %>% 
+  mutate(type = "warehouse") %>%
+  
+  # convert to sf
+  st_as_sf(
+    coords = c("longitude", "latitude"),
+    crs    = 4326
+  )
+
+
+# save as rds
+write_rds(distributor_sample_set, "00_data/04_networks_tampa_distributor_sample_set.rds")
+```
+
+
+## Randomize customers
+x.x Not Run: in case randomizing needs to be done
+```{r, eval=FALSE}
+customer_sample_set <- fl_listings_adr_tbl %>%
+
+  distinct(latitude, longitude, .keep_all = T) %>%
+  
+  # filter within bounding box
+  filter(between(longitude, tampa_bbox[1,1], tampa_bbox[1,2]),
+         between(latitude, tampa_bbox[2,1], tampa_bbox[2,2])) %>%
+
+  # random sample size
+  sample_n(size = 96) %>%
+  filter(!listing_id %in% distributor_sample_set$listing_id) %>%
+  
+  select(listing_id, longitude, latitude) %>% 
+  mutate(type = "customer") %>%
+  
+  # convert to sf
+  st_as_sf(
+    coords = c("longitude", "latitude"),
+    crs    = 4326
+  )
+
+
+# save as rds
+write_rds(customer_sample_set, "00_data/04_networks_tampa_customer_sample_set.rds")
+```
+
+
+Read in customers & distributors
+```{r}
+customer_sample_set    <- read_rds("00_data/04_networks_tampa_customer_sample_set.rds")
+distributor_sample_set <- read_rds("00_data/04_networks_tampa_distributor_sample_set.rds")
+```
+
+
+## Visualize
+```{r}
+# * Customer Data ----
+tampa_customers_sf <- customer_sample_set %>%
+    rowid_to_column(var = "customer_id")
+
+# * Warehouse Data ----
+tampa_distributors_sf <- distributor_sample_set %>%
+    rowid_to_column(var = "distributor_id")
+
+
+
+# visualize
+mapview(
+    tampa_medium_streets_sf$osm_lines, 
+    color      = "darkgreen",
+    layer.name = "Streets",
+    lwd        = 0.5 
+) +
+    mapview(
+        tampa_highways_sf$osm_lines,
+        layer.name = "Highways",
+        color      = "purple",
+        lwd        = 2
+    ) +
+    mapview(
+        tampa_customers_sf,
+        col.region = "blue",
+        color      = "white",
+        layer.name = "Customers",
+        cex        = 12
+    ) +
+    mapview(
+        tampa_distributors_sf,
+        col.region = "magenta",
+        color      = "white",
+        layer.name = "Warehouses",
+        cex        = 20
+    )
+```
+
+
+
+
+# 3.0 NEAREST NEIGHBORS
+## Getting Nearest Neighbors with nngeo
+Alternatively we can use sfnetworks
+```{r}
+network_tampa_ids <- st_nn(
+    x = tampa_distributors_sf,
+    y = tampa_customers_sf,
+    k = nrow(tampa_customers_sf),
+    progress = T
+)
+
+
+network_tampa_lines_sf <- st_connect(
+    x   = tampa_distributors_sf,
+    y   = tampa_customers_sf,
+    ids = network_tampa_ids
+)
+
+
+
+# visualize
+mapview(
+    tampa_medium_streets_sf$osm_lines, 
+    color      = "darkgreen",
+    layer.name = "Streets",
+    lwd        = 0.5 
+) +
+    mapview(
+        tampa_highways_sf$osm_lines,
+        layer.name = "Highways",
+        color      = "purple",
+        lwd        = 2
+    ) +
+    mapview(
+        tampa_customers_sf,
+        col.region = "blue",
+        color      = "white",
+        layer.name = "Customers",
+        cex        = 12
+    ) +
+    mapview(
+        tampa_distributors_sf,
+        col.region = "magenta",
+        color      = "white",
+        layer.name = "Warehouses",
+        cex        = 20
+    ) +
+    mapview(
+        network_tampa_lines_sf,
+        color      = "red"
+    )
+```
+
+
+## Approximate Shortest Path
+```{r}
+nodes_tampa_tbl <- network_tampa_ids %>%
+    enframe(
+        name  = "distributor_id",
+        value = "customer_id"
+    ) %>%
+    unnest(customer_id)
+
+
+shortest_tampa_network_sf <- network_tampa_lines_sf %>%
+    st_bind_cols(nodes_tampa_tbl) %>%
+    mutate(len = st_length(geometry)) %>%
+    relocate(len, .after = customer_id) %>%
+    
+    group_by(customer_id) %>%
+    filter(len == min(len)) %>%
+    ungroup()
+
+
+
+# visualize
+mapview(
+    tampa_medium_streets_sf$osm_lines,
+    color      = "darkgreen",
+    layer.name = "Streets",
+    lwd        = 0.5
+) +
+    mapview(
+        tampa_highways_sf$osm_lines,
+        layer.name = "Highways",
+        color      = "purple",
+        lwd        = 2
+    ) +
+    mapview(
+        tampa_customers_sf,
+        col.region = "blue",
+        color      = "white",
+        layer.name = "Customers",
+        cex        = 12
+    ) +
+    mapview(
+        tampa_distributors_sf,
+        col.region = "magenta",
+        color      = "white",
+        layer.name = "Warehouses",
+        cex        = 20
+    ) +
+    mapview(
+        shortest_tampa_network_sf,
+        color      = "red",
+        layer.name = "Shortest Network"
+    )
+```
+
+
+## Defining the Trip Points
+```{r}
+tampa_route_points_sf <- tampa_distributors_sf %>%
+    
+  bind_rows(tampa_customers_sf) %>%
+  select(type, distributor_id, customer_id, everything()) %>%
+  
+  # Adding in the distributor that the customer belongs to
+  left_join(
+      shortest_tampa_network_sf %>% 
+          select(distributor_id, customer_id) %>%
+          as_tibble() %>%
+          rename(distributor_to = distributor_id) %>%
+          select(-geometry),
+      by   = "customer_id"
+  ) %>%
+  
+  # Cleanup distributor_to
+  mutate(distributor_to = ifelse(is.na(distributor_to), distributor_id, distributor_to)) %>%
+  mutate(distributor_to = as.factor(distributor_to))
+
+
+
+# visualize
+mapview(
+    tampa_route_points_sf,
+    zcol       = "distributor_to",
+    layer.name = "Distributor Network"
+)
+```
+
+
+
+
+# 4.0 OSM ROUTES API
+## * Getting 1 route
+```{r}
+route_1_list <- tampa_route_points_sf %>%
+  filter(distributor_to == 1) %>%
+  osrmTrip()
+
+route_1_list[[1]]$summary
+
+mapview(route_1_list[[1]]$trip)
+```
+
+
+## Mapping to many routes
+```{r}
+warehouse_trips_tbl <- tampa_route_points_sf %>%
+  group_by(distributor_to) %>%
+  group_nest() %>%
+  mutate(trip = map(data, .f = osrmTrip))
+
+warehouse_trips_tbl$trip[[1]]
+
+warehouse_trips_sf <- warehouse_trips_tbl %>%
+    
+  # Double unnest
+  select(-data) %>%
+  unnest(trip) %>%
+  unnest(trip) %>%
+  
+  # Get first item
+  group_by(distributor_to) %>%
+  slice(1) %>%
+  ungroup() %>%
+  
+  # Unnest sf object and convert to sf
+  unnest(trip) %>%
+  st_as_sf()
+
+
+
+
+# visualize routes
+mapview(
+  tampa_customers_sf,
+  col.region = "blue",
+  color      = "white",
+  layer.name = "Customers",
+  cex        = 12
+) +
+  mapview(
+      tampa_distributors_sf,
+      col.region = "magenta",
+      color      = "white",
+      layer.name = "Warehouses",
+      cex        = 20
+  ) +
+  mapview(
+      warehouse_trips_sf,
+      zcol = "distributor_to",
+      color = tidyquant::palette_dark()[c(1,2,4)],
+      layer.name = "Trip"
+  )
+```
+
+
+
+
+# 5.0 COSTS
+## Estimating trip cost
+$2.90 cost per mile from National Private Truck Council (NPTC)
+```{r}
+warehouse_trips_tbl %>%
+  
+  # Double unnest
+  select(-data) %>%
+  unnest(trip) %>%
+  unnest(trip) %>%
+  
+  # Get the 2nd item
+  group_by(distributor_to) %>%
+  slice(2) %>%
+  ungroup() %>%
+  
+  # Trick: Unnest wider
+  unnest_wider(trip) %>%
+  
+  # Add our costs
+  mutate(distance = distance * 0.621371,
+         driver_cost_per_trip = 500,
+         fuel_cost_per_mile = 2.90,
+         total_cost  = distance * fuel_cost_per_mile + driver_cost_per_trip) %>%
+  rename(duration_min = duration,
+         distance_miles = distance)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

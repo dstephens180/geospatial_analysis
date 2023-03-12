@@ -1,12 +1,9 @@
 ---
-title: "Geospatial EDA"
+title: "Geospatial Resampling"
 ---
 
 # LIBRARIES
 ```{r setup, include=FALSE}
-# api connect
-library(httr)
-
 # sql connect
 library(odbc)
 library(DBI)
@@ -14,6 +11,7 @@ library(arrow)
 
 # core packages
 library(tidyverse)
+library(tidymodels)
 library(dbplyr)
 library(timetk)
 library(tidyquant)
@@ -25,39 +23,6 @@ library(zoo)
 library(fredr)
 library(tidycensus)
 
-# visualization
-library(gt)
-library(scales)
-library(plotly)
-library(vip)
-library(patchwork)
-library(ggrepel)
-library(ggraph)
-library(ggthemes)
-library(gganimate)
-library(GGally)
-library(colourvalues)
-
-# time series ml
-library(tidymodels)
-library(modeltime)
-library(modeltime.ensemble)
-library(modeltime.resample)
-library(prophet)
-library(rules)
-library(trelliscopejs)
-library(ranger)
-library(randomForest)
-library(recipes)
-library(kknn)
-library(Cubist)
-
-# Timing & Parallel Processing
-library(future)
-library(doFuture)
-library(parallel)
-library(blastula)
-library(bundle)
 
 # geocoding
 library(tidygeocoder)
@@ -66,6 +31,9 @@ library(leafgl)
 library(mapview)
 library(sf)
 library(tigris)
+library(spatialsample)
+
+library(viridis)
 
 # eda
 library(skimr)
@@ -78,13 +46,71 @@ options(scipen = 9999)
 SQL_ID  <- Sys.getenv("SQL_ID")
 SQL_PWD <- Sys.getenv("SQL_PWD")
 
-conn <- dbConnect(RMariaDB::MariaDB(),
-                 host = "rented-datascience.ccem57tyvghb.us-west-2.rds.amazonaws.com",
-                 username = SQL_ID,
-                 password = SQL_PWD,
-                 dbname = "rented_art")
+CENSUS_API_KEY <- Sys.getenv("CENSUS_API_KEY")
+
 
 knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+# 0.0 DATA
+## Import Data
+```{r}
+combined_listings_raw <- read_parquet("00_data/combined_listings_raw.parquet")
+
+usa_counties_sf <- read_rds("01_geospatial/usa_counties_shapefiles.rds")
+```
+
+
+## Tidycensus data
+Variables Available
+```{r}
+variables <- load_variables(2020, "acs5", cache = TRUE)
+
+View(variables)
+
+variables %>%
+  filter(str_detect(concept, "RENTAL"))
+```
+
+
+Median household income from US Census: B19013_001
+```{r}
+# by zip code
+median_income_zip_code <- get_acs(
+  geography = "zcta", 
+  variables = "B19013_001", 
+  geometry = TRUE
+  ) %>%
+  rename(median_income = estimate)
+  
+
+# by county
+median_income_county <- get_acs(
+  key = CENSUS_API_KEY,
+  geography = "county",
+  variables = "B19013_001",
+  year = 2020,
+  geometry = F,
+  moe_level = 90
+  ) %>%
+  rename(median_income = estimate)
+```
+
+
+```{r}
+
+median_income_county %>%
+  slice_max(estimate, prop = 0.01) %>%
+  # mutate(NAME = gsub(" County, Florida", "", NAME)) %>%
+  ggplot(aes(x = estimate, y = reorder(NAME, estimate))) +
+  geom_errorbarh(aes(xmin = estimate - moe, xmax = estimate + moe)) +
+  geom_point(color = "red", size = 3) +
+  labs(title = "Top 1% of Household income by county in USA",
+       subtitle = "2015-2020 US Census Survey",
+       y = "",
+       x = "ACS estimate (bars represent margin of error)")
 ```
 
 
@@ -92,61 +118,185 @@ knitr::opts_chunk$set(echo = TRUE)
 
 
 
+# 1.0 DATA PREP
+## Convert to simple features
+```{r}
+combined_listings_sf <- combined_listings_raw %>%
+  select(listing_id, longitude, latitude) %>%
+  st_as_sf(
+    coords = c("longitude", "latitude"),
+    crs    = 4326
+  )
+```
+
+## Listings by County
+```{r}
+
+listings_by_county_sf <- combined_listings_sf %>%
+  
+  # spatial join: which points intersect, and drop_na() to only show California
+  st_join(usa_counties_sf %>% select(GEOID)) %>%
+  drop_na() %>%
+  
+  # convert to tibble and summarize by GEOID
+  as_tibble() %>%
+  group_by(GEOID) %>%
+  summarize(count = n(), 
+            .groups = 'drop') %>%
+  ungroup() %>%
+  
+  # join by GEOID and convert back to sf
+  right_join(usa_counties_sf, by = "GEOID") %>%
+  right_join(median_income_county %>% select(GEOID, median_income), by = "GEOID") %>%
+  select(GEOID:count, 
+         median_income,
+         NAME, 
+         STATE_NAME,
+         geometry) %>%
+  drop_na() %>%
+  st_as_sf(crs = 4326)
+
+
+# visualize total number of listings
+listings_by_county_sf %>%
+    mapview(
+        zcol       = "count",
+        color      = "white",
+        layer.name = "Number of Listings"
+    )
+```
 
 
 
 
+## Median Income by County
+```{r}
+ggplotly(listings_by_county_sf %>%
+  filter(STATE_NAME == "Florida") %>%
+  ggplot(aes(fill = median_income)) +
+  geom_sf(alpha = 0.8) +
+  scale_fill_viridis_c())
+```
+
+
+## Relationship
+Median Income & Number of Listings
+```{r}
+state_totals <- listings_by_county_sf %>%
+  as_tibble() %>%
+  group_by(STATE_NAME) %>%
+  summarize(count = sum(count),
+            median_income = mean(median_income)) %>%
+  arrange(desc(count))
+
+
+listings_by_county_sf %>%
+  mutate(across(where(is.numeric), log)) %>%
+  # filter(STATE_NAME == "Florida") %>%
+  ggplot(aes(median_income, count)) +
+  geom_point(alpha = 0.8, size = 2) +
+  geom_smooth(method = "lm") +
+  labs(title = "Positive Relation with Listings & Median Income",
+       subtitle = "More Listings in Upper Right Quadrant")
+```
 
 
 
 
+# 2.0 MODELING
+## Cross-validation
+This helps avoid counties that are close to each other are similar
+The model is strengthened over time.
+```{r}
+# Florida only.
+state_listings_by_county_sf <- 
+  listings_by_county_sf
+  # filter(STATE_NAME == "California")
+
+
+set.seed(123)
+folds <- spatial_block_cv(state_listings_by_county_sf, v = 10)
+```
+
+
+```{r}
+# folds split
+autoplot(folds)
+
+# view 8th fold
+autoplot(folds$splits[[8]])
+
+```
+
+
+## Workflow
+```{r}
+income_result <-
+  workflow(
+    median_income ~ count, 
+    rand_forest(
+      mode  = "regression", 
+      mtry  = 25, 
+      trees = 1000, 
+      min_n = 25
+    ) %>%
+    set_engine("ranger")) %>%
+  fit_resamples(
+    folds, 
+    control = control_resamples(save_pred = T)
+  )
+```
+
+
+## View Predictions
+```{r}
+collect_predictions(income_result)
+```
+
+
+# 3.0 MAP MODEL RESULTS
+```{r}
+income_rmse <- state_listings_by_county_sf %>%
+  mutate(.row = row_number()) %>%
+  left_join(collect_predictions(income_result)) %>%
+  group_by(GEOID) %>%
+  
+  # calculate rmse of what you were predicting: median_income
+  rmse(median_income, .pred) %>%
+  rename(rmse = .estimate) %>%
+  select(GEOID, rmse)
+```
+
+
+## Graph
+```{r}
+# graph shows how good/bad of a job the model predicts income from number of listings
+# bright is bad.
+
+state_listings_by_county_sf %>%
+  left_join(income_rmse) %>%
+  ggplot(aes(fill = rmse)) +
+  geom_sf(color = NA, alpha = 0.8) +
+  labs(fill = "RMSE") +
+  scale_fill_viridis_c(labels = scales::dollar_format())
 
 
 
+# visualize median number of hosts
+mapview(
+  state_listings_by_county_sf,
+  zcol = "count", 
+  color = "white",
+  layer.name = "Number of Listings"
+) +
+  mapview(
+    state_listings_by_county_sf,
+    zcol = "median_income",
+    color = "white",
+    layer.name = "Median Income"
+  )
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+```
 
 
 
