@@ -2,7 +2,7 @@
 title: "Mapping Geospatial Networks"
 ---
 
-# LIBRARIES ----
+# LIBRARIES
 ```{r setup, include=FALSE}
 library(osmdata)    # Open Street Map Overpass API
 library(osrm)       # Open Street Map Routing API
@@ -21,7 +21,8 @@ library(tidyquant)
 # 0.0 DATA
 ## Import FL Listings
 ```{r}
-fl_listings_adr_tbl <- read_rds("C:\\Users\\DavidStephens\\Desktop\\Github\\artr_replica\\00_data\\fl_listings_adr_tbl.rds")
+broward_listings_tbl <- read_rds("C:\\Users\\DavidStephens\\Desktop\\Github\\geospatial_analysis\\00_data\\listings_filtered_dt.rds") %>%
+  select(id, longitude, latitude)
 ```
 
 
@@ -32,7 +33,7 @@ fl_listings_adr_tbl <- read_rds("C:\\Users\\DavidStephens\\Desktop\\Github\\artr
 # - Get roads, water, etc
 # - Resource: # https://wiki.openstreetmap.org/wiki/Map_features
 
-tampa_bbox <- getbb("Tampa, FL")
+broward_bbox <- getbb("Broward County, FL")
 ?osmdata()
 
 
@@ -41,47 +42,31 @@ available_tags("highway") # https://wiki.openstreetmap.org/wiki/Map_features#Roa
 ```
 
 
-## Getting Major Highways
-```{r}
-tampa_highways_sf <- opq(tampa_bbox) %>%
-    add_osm_feature(
-        key   = "highway", 
-        value = c("motorway", "primary", "motorway_link", "primary_link")
-    ) %>%
-    osmdata_sf() 
-
-# save & read
-tampa_highways_sf %>% write_rds("00_data/04_tampa_highways_sf.rds")
-tampa_highways_sf <- read_rds("00_data/04_tampa_highways_sf.rds")
-
-# visualize
-mapview(tampa_highways_sf$osm_lines)
-```
 
 
 ## Getting Smaller roads
 ```{r}
 # medium streets
-tampa_medium_streets_sf <- opq(tampa_bbox) %>%
+broward_medium_streets_sf <- opq(broward_bbox) %>%
     add_osm_feature(
         key   = "highway", 
         value = c("secondary", "tertiary", "secondary_link", "tertiary_link")
     ) %>%
     osmdata_sf()
 
-tampa_medium_streets_sf %>% write_rds("00_data/04_tampa_medium_streets_sf.rds")
-tampa_medium_streets_sf <- read_rds("00_data/04_tampa_medium_streets_sf.rds")
+broward_medium_streets_sf %>% write_rds("00_data/04_broward_medium_streets_sf.rds")
+broward_medium_streets_sf <- read_rds("00_data/04_broward_medium_streets_sf.rds")
 
 
 
 # visualize
 mapview(
-    tampa_medium_streets_sf$osm_lines, 
+    broward_medium_streets_sf$osm_lines, 
     color = "darkgreen",
     layer.name = "Streets"
 ) +
     mapview(
-        tampa_highways_sf$osm_lines,
+        broward_highways_sf$osm_lines,
         layer.name = "Highways",
         color = "purple"
     )
@@ -92,7 +77,7 @@ mapview(
 x.x Not Run: too much detail for this analysis
 ```{r, eval=FALSE}
 # residential
-tampa_residential_streets_sf <- opq(tampa_bbox) %>%
+broward_residential_streets_sf <- opq(broward_bbox) %>%
     add_osm_feature(
         key   = "highway", 
         value = c("residential")
@@ -100,8 +85,8 @@ tampa_residential_streets_sf <- opq(tampa_bbox) %>%
     osmdata_sf()
 
 
-tampa_residential_streets_sf %>% write_rds("00_data/04_tampa_residential_streets_sf.rds")
-tampa_residential_streets_sf <- read_rds("00_data/04_tampa_residential_streets_sf.rds")
+broward_residential_streets_sf %>% write_rds("00_data/04_broward_residential_streets_sf.rds")
+broward_residential_streets_sf <- read_rds("00_data/04_broward_residential_streets_sf.rds")
 ```
 
 
@@ -109,104 +94,50 @@ tampa_residential_streets_sf <- read_rds("00_data/04_tampa_residential_streets_s
 
 
 # 2.0 CUSTOMERS & WAREHOUSES
-## Randomize distributors
-x.x Not Run: in case randomizing needs to be done
-```{r, eval=FALSE}
-# warehouse sample set
-distributor_sample_set <- fl_listings_adr_tbl %>%
-  
-  # filter within bounding box
-  filter(between(longitude, tampa_bbox[1,1], tampa_bbox[1,2]),
-         between(latitude, tampa_bbox[2,1], tampa_bbox[2,2])) %>%
-  
-  # random sample size
-  sample_n(size = 3) %>%
-  select(listing_id, longitude, latitude) %>% 
-  mutate(type = "warehouse") %>%
-  
-  # convert to sf
-  st_as_sf(
-    coords = c("longitude", "latitude"),
-    crs    = 4326
-  )
 
-
-# save as rds
-write_rds(distributor_sample_set, "00_data/04_networks_tampa_distributor_sample_set.rds")
-```
-
-
-## Randomize customers
-x.x Not Run: in case randomizing needs to be done
-```{r, eval=FALSE}
-customer_sample_set <- fl_listings_adr_tbl %>%
-
-  distinct(latitude, longitude, .keep_all = T) %>%
-  
-  # filter within bounding box
-  filter(between(longitude, tampa_bbox[1,1], tampa_bbox[1,2]),
-         between(latitude, tampa_bbox[2,1], tampa_bbox[2,2])) %>%
-
-  # random sample size
-  sample_n(size = 96) %>%
-  filter(!listing_id %in% distributor_sample_set$listing_id) %>%
-  
-  select(listing_id, longitude, latitude) %>% 
-  mutate(type = "customer") %>%
-  
-  # convert to sf
-  st_as_sf(
-    coords = c("longitude", "latitude"),
-    crs    = 4326
-  )
-
-
-# save as rds
-write_rds(customer_sample_set, "00_data/04_networks_tampa_customer_sample_set.rds")
-```
 
 
 Read in customers & distributors
 ```{r}
-customer_sample_set    <- read_rds("00_data/04_networks_tampa_customer_sample_set.rds")
-distributor_sample_set <- read_rds("00_data/04_networks_tampa_distributor_sample_set.rds")
+customer_sample_set    <- read_rds("00_data/04_networks_broward_customer_sample_set.rds")
+distributor_sample_set <- read_rds("00_data/04_networks_broward_distributor_sample_set.rds")
 ```
 
 
 ## Visualize
 ```{r}
 # * Customer Data ----
-tampa_customers_sf <- customer_sample_set %>%
+broward_customers_sf <- customer_sample_set %>%
     rowid_to_column(var = "customer_id")
 
 # * Warehouse Data ----
-tampa_distributors_sf <- distributor_sample_set %>%
+broward_distributors_sf <- distributor_sample_set %>%
     rowid_to_column(var = "distributor_id")
 
 
 
 # visualize
 mapview(
-    tampa_medium_streets_sf$osm_lines, 
+    broward_medium_streets_sf$osm_lines, 
     color      = "darkgreen",
     layer.name = "Streets",
     lwd        = 0.5 
 ) +
     mapview(
-        tampa_highways_sf$osm_lines,
+        broward_highways_sf$osm_lines,
         layer.name = "Highways",
         color      = "purple",
         lwd        = 2
     ) +
     mapview(
-        tampa_customers_sf,
+        broward_customers_sf,
         col.region = "blue",
         color      = "white",
         layer.name = "Customers",
         cex        = 12
     ) +
     mapview(
-        tampa_distributors_sf,
+        broward_distributors_sf,
         col.region = "magenta",
         color      = "white",
         layer.name = "Warehouses",
@@ -221,51 +152,51 @@ mapview(
 ## Getting Nearest Neighbors with nngeo
 Alternatively we can use sfnetworks
 ```{r}
-network_tampa_ids <- st_nn(
-    x = tampa_distributors_sf,
-    y = tampa_customers_sf,
-    k = nrow(tampa_customers_sf),
+network_broward_ids <- st_nn(
+    x = broward_distributors_sf,
+    y = broward_customers_sf,
+    k = nrow(broward_customers_sf),
     progress = T
 )
 
 
-network_tampa_lines_sf <- st_connect(
-    x   = tampa_distributors_sf,
-    y   = tampa_customers_sf,
-    ids = network_tampa_ids
+network_broward_lines_sf <- st_connect(
+    x   = broward_distributors_sf,
+    y   = broward_customers_sf,
+    ids = network_broward_ids
 )
 
 
 
 # visualize
 mapview(
-    tampa_medium_streets_sf$osm_lines, 
+    broward_medium_streets_sf$osm_lines, 
     color      = "darkgreen",
     layer.name = "Streets",
     lwd        = 0.5 
 ) +
     mapview(
-        tampa_highways_sf$osm_lines,
+        broward_highways_sf$osm_lines,
         layer.name = "Highways",
         color      = "purple",
         lwd        = 2
     ) +
     mapview(
-        tampa_customers_sf,
+        broward_customers_sf,
         col.region = "blue",
         color      = "white",
         layer.name = "Customers",
         cex        = 12
     ) +
     mapview(
-        tampa_distributors_sf,
+        broward_distributors_sf,
         col.region = "magenta",
         color      = "white",
         layer.name = "Warehouses",
         cex        = 20
     ) +
     mapview(
-        network_tampa_lines_sf,
+        network_broward_lines_sf,
         color      = "red"
     )
 ```
@@ -273,7 +204,7 @@ mapview(
 
 ## Approximate Shortest Path
 ```{r}
-nodes_tampa_tbl <- network_tampa_ids %>%
+nodes_broward_tbl <- network_broward_ids %>%
     enframe(
         name  = "distributor_id",
         value = "customer_id"
@@ -281,8 +212,8 @@ nodes_tampa_tbl <- network_tampa_ids %>%
     unnest(customer_id)
 
 
-shortest_tampa_network_sf <- network_tampa_lines_sf %>%
-    st_bind_cols(nodes_tampa_tbl) %>%
+shortest_broward_network_sf <- network_broward_lines_sf %>%
+    st_bind_cols(nodes_broward_tbl) %>%
     mutate(len = st_length(geometry)) %>%
     relocate(len, .after = customer_id) %>%
     
@@ -294,33 +225,33 @@ shortest_tampa_network_sf <- network_tampa_lines_sf %>%
 
 # visualize
 mapview(
-    tampa_medium_streets_sf$osm_lines,
+    broward_medium_streets_sf$osm_lines,
     color      = "darkgreen",
     layer.name = "Streets",
     lwd        = 0.5
 ) +
     mapview(
-        tampa_highways_sf$osm_lines,
+        broward_highways_sf$osm_lines,
         layer.name = "Highways",
         color      = "purple",
         lwd        = 2
     ) +
     mapview(
-        tampa_customers_sf,
+        broward_customers_sf,
         col.region = "blue",
         color      = "white",
         layer.name = "Customers",
         cex        = 12
     ) +
     mapview(
-        tampa_distributors_sf,
+        broward_distributors_sf,
         col.region = "magenta",
         color      = "white",
         layer.name = "Warehouses",
         cex        = 20
     ) +
     mapview(
-        shortest_tampa_network_sf,
+        shortest_broward_network_sf,
         color      = "red",
         layer.name = "Shortest Network"
     )
@@ -329,14 +260,14 @@ mapview(
 
 ## Defining the Trip Points
 ```{r}
-tampa_route_points_sf <- tampa_distributors_sf %>%
+broward_route_points_sf <- broward_distributors_sf %>%
     
-  bind_rows(tampa_customers_sf) %>%
+  bind_rows(broward_customers_sf) %>%
   select(type, distributor_id, customer_id, everything()) %>%
   
   # Adding in the distributor that the customer belongs to
   left_join(
-      shortest_tampa_network_sf %>% 
+      shortest_broward_network_sf %>% 
           select(distributor_id, customer_id) %>%
           as_tibble() %>%
           rename(distributor_to = distributor_id) %>%
@@ -352,7 +283,7 @@ tampa_route_points_sf <- tampa_distributors_sf %>%
 
 # visualize
 mapview(
-    tampa_route_points_sf,
+    broward_route_points_sf,
     zcol       = "distributor_to",
     layer.name = "Distributor Network"
 )
@@ -364,7 +295,7 @@ mapview(
 # 4.0 OSM ROUTES API
 ## * Getting 1 route
 ```{r}
-route_1_list <- tampa_route_points_sf %>%
+route_1_list <- broward_route_points_sf %>%
   filter(distributor_to == 1) %>%
   osrmTrip()
 
@@ -376,7 +307,7 @@ mapview(route_1_list[[1]]$trip)
 
 ## Mapping to many routes
 ```{r}
-warehouse_trips_tbl <- tampa_route_points_sf %>%
+warehouse_trips_tbl <- broward_route_points_sf %>%
   group_by(distributor_to) %>%
   group_nest() %>%
   mutate(trip = map(data, .f = osrmTrip))
@@ -404,14 +335,14 @@ warehouse_trips_sf <- warehouse_trips_tbl %>%
 
 # visualize routes
 mapview(
-  tampa_customers_sf,
+  broward_customers_sf,
   col.region = "blue",
   color      = "white",
   layer.name = "Customers",
   cex        = 12
 ) +
   mapview(
-      tampa_distributors_sf,
+      broward_distributors_sf,
       col.region = "magenta",
       color      = "white",
       layer.name = "Warehouses",
@@ -450,8 +381,8 @@ warehouse_trips_tbl %>%
   # Add our costs
   mutate(distance = distance * 0.621371,
          driver_cost_per_trip = 500,
-         fuel_cost_per_mile = 2.90,
-         total_cost  = distance * fuel_cost_per_mile + driver_cost_per_trip) %>%
+         cost_per_mile = 2.90,
+         total_cost  = distance * cost_per_mile + driver_cost_per_trip) %>%
   rename(duration_min = duration,
          distance_miles = distance)
 ```
