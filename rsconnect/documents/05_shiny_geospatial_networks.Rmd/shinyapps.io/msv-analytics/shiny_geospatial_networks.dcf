@@ -1,0 +1,15 @@
+name: shiny_geospatial_networks
+title: shiny_geospatial_networks
+username:
+account: msv-analytics
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 8674084
+bundleId: 7008373
+url: https://msv-analytics.shinyapps.io/shiny_geospatial_networks/
+when: 1679792877.10828
+lastSyncTime: 1679792877.10829
+asMultiple: FALSE
+asStatic: FALSE
+additionalFiles: 00_data/05_columbia_bbox.rds|00_data/05_columbia_highways.rds|00_data/05_columbia_medium_streets.rds|00_data/05_raleigh_bbox.rds|00_data/05_raleigh_highways.rds|00_data/05_raleigh_medium_streets.rds
+ignoredFiles: 00_data/05_miami_bbox.rds|00_data/05_seattle_bbox.rds|00_data/04_miami_highways_sf.rds|00_data/04_miami_medium_streets_sf.rds|00_data/05_seattle_highways.rds|00_data/05_seattle_medium_streets.rds

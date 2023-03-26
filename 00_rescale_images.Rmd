@@ -1,0 +1,14 @@
+---
+title: "Rescale Image(s)"
+---
+
+```{r}
+library(magick)
+
+# read in
+logo <- image_read("www/msv-logo.png")
+print(logo)
+
+# resize 
+image_scale(logo, "250") %>% image_write("www/msv-logo-small.png")
+```

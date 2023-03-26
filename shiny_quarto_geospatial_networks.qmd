@@ -1,0 +1,459 @@
+---
+title: "Mapping Geospatial Networks"
+format:
+  html:
+    highlight-style: a11y-dark
+    code-tools: true
+    embed-resources: true
+server: shiny
+execute:
+  echo: true
+---
+
+# LIBRARIES
+
+```{r}
+#| output: false
+library(osmdata)
+library(osrm)
+
+library(sf)
+library(nngeo)
+library(mapview)
+
+library(tidyverse)
+library(tidyquant)
+```
+
+# Data
+
+## Bounding Box
+
+A bounding box shows the minimum & maximum coordinates of a given location. Let's see what the aguascalientes County bounding box has.
+
+```{r}
+bbox <- getbb("columbia, sc")
+write_rds(bbox, "00_data/05_columbia_bbox.rds")
+```
+
+```{r, eval=FALSE}
+#| output: false
+#| echo: false
+
+# randomize distributors
+random_distributor_set <- 
+  data.frame(
+    latitude = runif(3, min=aguascalientes_bbox[2,1], max=aguascalientes_bbox[2,2]),
+    longitude = runif(3, min=aguascalientes_bbox[1,1], max=aguascalientes_bbox[1,2]),
+    type = "warehouse") %>%
+  rowid_to_column(var = "rowid") %>%
+  select(-rowid) %>%
+
+  # convert to sf
+  st_as_sf(
+    coords = c("longitude", "latitude"),
+    crs    = 4326
+  )
+
+# save as rds
+write_rds(random_distributor_set, "00_data/05_networks_aguascalientes_distributor_sample_set.rds")
+
+
+
+
+# randomize customers
+random_customer_set <- 
+  data.frame(
+    latitude = runif(95, min=aguascalientes_bbox[2,1], max=aguascalientes_bbox[2,2]),
+    longitude = runif(95, min=aguascalientes_bbox[1,1], max=aguascalientes_bbox[1,2])) %>%
+  
+  # remove any duplicates
+  distinct(latitude, longitude) %>%
+  
+  # add identifiers
+  rowid_to_column(var = "rowid") %>%
+  mutate(type = "customer") %>%
+  select(-rowid) %>%
+
+  # convert to sf
+  st_as_sf(
+    coords = c("longitude", "latitude"),
+    crs    = 4326
+  )
+
+# save as rds
+write_rds(random_customer_set, "00_data/05_networks_aguascalientes_customer_sample_set.rds")
+```
+
+## Highways & Medium-Sized Streets
+
+With the bounding box coordinates we can get all OSM (Open Street Map) data for highways and other streets. Residential streets would take too long, but they can be added later.
+
+```{r}
+#| output: false
+# highways
+highways_sf <- opq(bbox) %>%
+    add_osm_feature(
+        key   = "highway", 
+        value = c("motorway", "primary", "motorway_link", "primary_link")
+    ) %>%
+    osmdata_sf() 
+
+# medium streets
+medium_streets_sf <- opq(bbox) %>%
+    add_osm_feature(
+        key   = "highway", 
+        value = c("secondary", "tertiary", "secondary_link", "tertiary_link")
+    ) %>%
+    osmdata_sf()
+
+
+# residential streets
+# small_streets_sf <- opq(bbox) %>%
+#     add_osm_feature(
+#         key   = "highway", 
+#         value = c("residential")
+#     ) %>%
+#     osmdata_sf()
+
+
+# save as rds
+write_rds(highways_sf, "00_data/05_columbia_highways.rds")
+write_rds(medium_streets_sf, "00_data/05_columbia_medium_streets.rds")
+
+
+# visualize
+mapview(
+    medium_streets_sf$osm_lines, 
+    color = "darkgreen",
+    layer.name = "Streets"
+) +
+    mapview(
+        highways_sf$osm_lines,
+        layer.name = "Highways",
+        color = "purple"
+    ) +
+    mapview(
+        small_streets_sf$osm_lines,
+        layer.name = "Residential",
+        color = "lightgreen"
+    )
+```
+
+![](html_images/image_0.PNG)
+
+# Customers & Distribution Centers
+
+Let's add a row id and visualize the 3 distribution centers and 95 customers.
+
+-   Customers are blue
+
+-   Distributors are magenta
+
+```{r}
+#| output: false
+aguascalientes_customers_sf <- random_customer_set %>%
+    rowid_to_column(var = "customer_id")
+
+
+aguascalientes_distributors_sf <- random_distributor_set %>%
+    rowid_to_column(var = "distributor_id")
+```
+
+```{r}
+#| output: false
+#| echo: false
+# visualize
+mapview(
+    aguascalientes_medium_streets_sf$osm_lines, 
+    color      = "darkgreen",
+    layer.name = "Streets",
+    lwd        = 0.5 
+) +
+    mapview(
+        aguascalientes_highways_sf$osm_lines,
+        layer.name = "Highways",
+        color      = "purple",
+        lwd        = 2
+    ) +
+    mapview(
+        aguascalientes_customers_sf,
+        col.region = "blue",
+        color      = "white",
+        layer.name = "Customers",
+        cex        = 12
+    ) +
+    mapview(
+        aguascalientes_distributors_sf,
+        col.region = "magenta",
+        color      = "white",
+        layer.name = "Warehouses",
+        cex        = 20
+    )
+```
+
+![](html_images/image_1.PNG)
+
+# Nearest Neighbors
+
+I decided to use nearest-neighbors to get the distance between locations. Alternatively we could use sfnetworks.
+
+## The Process
+
+1.  First, connect each distributors to each customer, no matter the distance. The map looks overwhelming.
+
+2.  Next, calculate the distance from each distributor to each customer. Even the farthest customer will be connected to a distributor.
+
+3.  Finally, group by the the customer and keep the shortest distance to any distributor.
+
+Now we have the best distributor for each customer.
+
+```{r}
+#| output: false
+#| echo: false
+network_aguascalientes_ids <- st_nn(
+    x = aguascalientes_distributors_sf,
+    y = aguascalientes_customers_sf,
+    k = nrow(aguascalientes_customers_sf),
+    progress = T
+)
+
+
+network_aguascalientes_lines_sf <- st_connect(
+    x   = aguascalientes_distributors_sf,
+    y   = aguascalientes_customers_sf,
+    ids = network_aguascalientes_ids
+)
+```
+
+```{r}
+#| output: false
+#| echo: false
+mapview(
+    aguascalientes_medium_streets_sf$osm_lines, 
+    color      = "darkgreen",
+    layer.name = "Streets",
+    lwd        = 0.5 
+) +
+    mapview(
+        aguascalientes_highways_sf$osm_lines,
+        layer.name = "Highways",
+        color      = "purple",
+        lwd        = 2
+    ) +
+    mapview(
+        aguascalientes_customers_sf,
+        col.region = "blue",
+        color      = "white",
+        layer.name = "Customers",
+        cex        = 12
+    ) +
+    mapview(
+        aguascalientes_distributors_sf,
+        col.region = "magenta",
+        color      = "white",
+        layer.name = "Warehouses",
+        cex        = 20
+    ) +
+    mapview(
+        network_aguascalientes_lines_sf,
+        color      = "red"
+    )
+```
+
+![](html_images/image_2.PNG)
+
+```{r}
+#| echo: false
+#| warning: false
+nodes_aguascalientes_tbl <- network_aguascalientes_ids %>%
+    enframe(
+        name  = "distributor_id",
+        value = "customer_id"
+    ) %>%
+    unnest(customer_id)
+
+
+shortest_aguascalientes_network_sf <- network_aguascalientes_lines_sf %>%
+    st_bind_cols(nodes_aguascalientes_tbl) %>%
+    mutate(len = st_length(geometry)) %>%
+    relocate(len, .after = customer_id) %>%
+    
+    group_by(customer_id) %>%
+    filter(len == min(len)) %>%
+    ungroup()
+```
+
+```{r}
+#| output: false
+#| echo: false
+mapview(
+    aguascalientes_medium_streets_sf$osm_lines,
+    color      = "darkgreen",
+    layer.name = "Streets",
+    lwd        = 0.5
+) +
+    mapview(
+        aguascalientes_highways_sf$osm_lines,
+        layer.name = "Highways",
+        color      = "purple",
+        lwd        = 2
+    ) +
+    mapview(
+        aguascalientes_customers_sf,
+        col.region = "blue",
+        color      = "white",
+        layer.name = "Customers",
+        cex        = 12
+    ) +
+    mapview(
+        aguascalientes_distributors_sf,
+        col.region = "magenta",
+        color      = "white",
+        layer.name = "Warehouses",
+        cex        = 20
+    ) +
+    mapview(
+        shortest_aguascalientes_network_sf,
+        color      = "red",
+        layer.name = "Shortest Network"
+    )
+```
+
+![](html_images/image_3.PNG)
+
+## Visualize Trip Points
+
+The map below color-codes each distributor to their customer.
+
+```{r}
+#| output: false
+aguascalientes_route_points_sf <- aguascalientes_distributors_sf %>%
+    
+  bind_rows(aguascalientes_customers_sf) %>%
+  select(type, distributor_id, customer_id, everything()) %>%
+  
+  # Adding in the distributor that the customer belongs to
+  left_join(
+      shortest_aguascalientes_network_sf %>% 
+          select(distributor_id, customer_id) %>%
+          as_tibble() %>%
+          rename(distributor_to = distributor_id) %>%
+          select(-geometry),
+      by   = "customer_id"
+  ) %>%
+  
+  # Cleanup distributor_to
+  mutate(distributor_to = ifelse(is.na(distributor_to), distributor_id, distributor_to)) %>%
+  mutate(distributor_to = as.factor(distributor_to))
+
+```
+
+```{r}
+#| output: false
+#| echo: false
+mapview(
+    aguascalientes_route_points_sf,
+    zcol       = "distributor_to",
+    layer.name = "Distributor Network"
+)
+```
+
+![](html_images/image_4.PNG)
+
+# Planning the Route
+
+We use osrmTrip() to get the best route between each location for that distributor. This is our final product.
+
+```{r}
+#| echo: false
+#| output: false
+warehouse_trips_tbl <- aguascalientes_route_points_sf %>%
+  group_by(distributor_to) %>%
+  group_nest() %>%
+  mutate(trip = map(data, .f = osrmTrip))
+
+warehouse_trips_tbl$trip[[1]]
+
+warehouse_trips_sf <- warehouse_trips_tbl %>%
+    
+  # Double unnest
+  select(-data) %>%
+  unnest(trip) %>%
+  unnest(trip) %>%
+  
+  # Get first item
+  group_by(distributor_to) %>%
+  slice(1) %>%
+  ungroup() %>%
+  
+  # Unnest sf object and convert to sf
+  unnest(trip) %>%
+  st_as_sf()
+```
+
+```{r}
+#| echo: true
+#| output: true
+# visualize routes
+mapview(
+  aguascalientes_customers_sf,
+  col.region = "blue",
+  color      = "white",
+  layer.name = "Customers",
+  cex        = 12
+) +
+  mapview(
+      aguascalientes_distributors_sf,
+      col.region = "magenta",
+      color      = "white",
+      layer.name = "Warehouses",
+      cex        = 20
+  ) +
+  mapview(
+      warehouse_trips_sf,
+      zcol = "distributor_to",
+      color = tidyquant::palette_dark()[c(1,2,4)],
+      layer.name = "Trip"
+  )
+```
+
+## Estimating trip cost
+
+The National Private Truck Council (NPTC) averages \$2.90 cost per mile including gas, maintenance, insurance, etc.
+
+My estimated variables can be adjusted, but below is what I used.
+
+-   \$300 paid for each delivery truck driver
+
+-   \$2.90 cost per mile
+
+```{r}
+#| echo: false
+warehouse_trips_tbl %>%
+  
+  # Double unnest
+  select(-data) %>%
+  unnest(trip) %>%
+  unnest(trip) %>%
+  
+  # Get the 2nd item
+  group_by(distributor_to) %>%
+  slice(2) %>%
+  ungroup() %>%
+  
+  # Trick: Unnest wider
+  unnest_wider(trip) %>%
+  
+  # Add our costs
+  mutate(distance = distance * 0.621371,
+         driver_cost = 300,
+         cost_per_mile = 2.90,
+         total_cost  = distance * cost_per_mile + driver_cost) %>%
+  rename(duration_min = duration,
+         distance_miles = distance)
+```
+
+Any questions can be sent through the contact page. I'm happy to help.
+
+Thanks for reading!

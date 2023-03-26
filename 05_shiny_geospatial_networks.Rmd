@@ -1,0 +1,516 @@
+---
+title: "Geospatial Networks"
+output:
+  flexdashboard::flex_dashboard:
+    logo: "www/msv-logo-small.png"
+    orientation: rows
+    theme:
+      version: 4
+      bg: '#FFFFFF'
+      fg: '#000000'
+      primary: '#36435E'
+      navbar-bg: '#36435E'
+      heading_font: Arial
+      base_font: Arial
+runtime: shiny
+resource_files:
+- 00_data/05_austin_bbox.rds
+- 00_data/05_denver_bbox.rds
+- 00_data/05_philadelphia_bbox.rds
+- 00_data/05_austin_highways.rds
+- 00_data/05_austin_medium_streets.rds
+- 00_data/05_denver_highways.rds
+- 00_data/05_denver_medium_streets.rds
+- 00_data/05_philadelphia_highways.rds
+- 00_data/05_philadelphia_medium_streets.rds
+- 00_data/05_columbia_bbox.rds
+- 00_data/05_columbia_highways.rds
+- 00_data/05_columbia_medium_streets.rds
+- 00_data/05_raleigh_bbox.rds
+- 00_data/05_raleigh_highways.rds
+- 00_data/05_raleigh_medium_streets.rds
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo    = FALSE,
+    message = FALSE,
+    warning = FALSE
+)
+
+library(osmdata)
+library(osrm)
+
+library(sf)
+library(nngeo)
+library(mapview)
+library(leaflet)
+library(plotly)
+
+library(tidyverse)
+library(tidyquant)
+library(janitor)
+
+library(flexdashboard)
+library(shiny)
+library(odbc)
+library(rsconnect)
+library(shinyWidgets)
+library(DT)
+
+library(shinyjs)
+library(bslib)
+
+date <- today()
+options(scipen = 9999)
+
+```
+
+
+
+``` {css}
+.section.sidebar.my-class {
+  overflow: visible;
+  z-index: 10;
+}
+```
+
+
+
+```{r}
+### BOUNDING BOX ###
+austin_bbox <- read_rds("00_data/05_austin_bbox.rds") %>% data.frame(location = "Austin, TX")
+denver_bbox <- read_rds("00_data/05_denver_bbox.rds") %>% data.frame(location = "Denver, CO")
+columbia_bbox <- read_rds("00_data/05_columbia_bbox.rds") %>% data.frame(location = "Columbia, SC")
+raleigh_bbox <- read_rds("00_data/05_raleigh_bbox.rds") %>% data.frame(location = "Raleigh, NC")
+philadelphia_bbox <- read_rds("00_data/05_philadelphia_bbox.rds") %>% data.frame(location = "Philadelphia, PA")
+
+full_bbox <- bind_rows(austin_bbox, denver_bbox, columbia_bbox, philadelphia_bbox, raleigh_bbox)
+
+
+### STREET DATA ###
+austin_highways_sf       <- read_rds('00_data/05_austin_highways.rds')
+austin_medium_streets_sf <- read_rds('00_data/05_austin_medium_streets.rds')
+
+denver_highways_sf       <- read_rds('00_data/05_denver_highways.rds')
+denver_medium_streets_sf <- read_rds('00_data/05_denver_medium_streets.rds')
+
+columbia_highways_sf       <- read_rds('00_data/05_columbia_highways.rds')
+columbia_medium_streets_sf <- read_rds('00_data/05_columbia_medium_streets.rds')
+
+raleigh_highways_sf       <- read_rds('00_data/05_raleigh_highways.rds')
+raleigh_medium_streets_sf <- read_rds('00_data/05_raleigh_medium_streets.rds')
+
+philadelphia_highways_sf       <- read_rds('00_data/05_philadelphia_highways.rds')
+philadelphia_medium_streets_sf <- read_rds('00_data/05_philadelphia_medium_streets.rds')
+
+```
+
+
+
+
+```{r}
+### INPUTS ###
+locations <- unique(full_bbox$location) %>% sort()
+location_default <- locations[[1]]
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Route Optimization
+
+## Column {.sidebar .my-class}
+
+```{r}
+useShinyjs(rmd = TRUE)
+
+
+pickerInput(inputId  = "select_location", 
+            label    = h5("Select Location"),
+            choices  = locations,
+            selected = location_default,
+            multiple = FALSE,
+            options  = list(`actions-box` = TRUE,
+                            size = 10,
+                            `live-search` = FALSE))
+
+br()
+sliderInput(inputId = "select_customer_number",
+            label    = h5("Number of Customers"),
+            min = 1,
+            max = 55,
+            value = 30, 
+            step = 1,
+            sep = "")
+
+br()
+sliderInput(inputId = "select_distributor_number",
+            label    = h5("Number of Distributors"),
+            min = 1,
+            max = 10,
+            value = 3, 
+            step = 1,
+            sep = "")
+
+br()
+sliderInput(inputId = "select_driver_cost",
+            label    = h5("Set Driver Cost per Trip"),
+            min = 100,
+            max = 1000,
+            value = 400, 
+            step = 50,
+            sep = "", pre = "$")
+
+br()
+hr()
+br()
+
+
+# apply button
+actionButton(inputId = "apply_1", label = "Randomize & Route", icon = icon("sync"))
+
+```
+
+
+
+```{r}
+# reactive
+full_points_filtered <- eventReactive(
+  eventExpr = input$apply_1, valueExpr = {
+  
+  bbox_selected <- full_bbox %>% filter(location == input$select_location)
+
+
+  ### RANDOMIZE DISTRIBUTORS & CUSTOMERS ###
+  # distributors
+  distributors_sf <- 
+    data.frame(
+      latitude = runif(as.numeric(input$select_distributor_number), min=bbox_selected[2,1], max=bbox_selected[2,2]),
+      longitude = runif(as.numeric(input$select_distributor_number), min=bbox_selected[1,1], max=bbox_selected[1,2]),
+      type = "warehouse") %>%
+    
+    # remove any duplicates
+    distinct(latitude, longitude, .keep_all = T) %>%
+    rowid_to_column(var = "distributor_id") %>%
+    st_as_sf(
+      coords = c("longitude", "latitude"),
+      crs    = 4326
+    )
+  
+  
+  # customers
+  customers_sf <- 
+    data.frame(
+      latitude = runif(as.numeric(input$select_customer_number), min=bbox_selected[2,1], max=bbox_selected[2,2]),
+      longitude = runif(as.numeric(input$select_customer_number), min=bbox_selected[1,1], max=bbox_selected[1,2]),
+      type = "customer") %>%
+    
+    # remove any duplicates
+    distinct(latitude, longitude, .keep_all = T) %>%
+    rowid_to_column(var = "customer_id") %>%
+    st_as_sf(
+      coords = c("longitude", "latitude"),
+      crs    = 4326
+    )
+  
+  # remove any duplicates
+  full_points <- distributors_sf %>%
+    bind_rows(customers_sf) %>%
+    distinct(geometry, .keep_all = T)
+  
+  
+  }, 
+  
+  ignoreNULL = FALSE
+)
+```
+
+
+```{r}
+# reactive 2 for datatable
+warehouse_trips_filtered <- eventReactive(
+  eventExpr = input$apply_1, valueExpr = {
+  
+  customers_sf    <- full_points_filtered() %>% filter(type == 'customer') %>% select(-distributor_id)
+  distributors_sf <- full_points_filtered() %>% filter(type == 'warehouse') %>% select(-customer_id)
+  
+  
+  ### NEAREST NEIGHBORS ###
+  network_ids <- st_nn(
+    x = distributors_sf,
+    y = customers_sf,
+    k = nrow(customers_sf),
+    progress = T
+  )
+  
+  
+  network_lines_sf <- st_connect(
+      x   = distributors_sf,
+      y   = customers_sf,
+      ids = network_ids
+  )
+  
+  
+  ### CONNECTING NODES & LINES ###
+  nodes_tbl <- st_nn(
+      x = distributors_sf,
+      y = customers_sf,
+      k = nrow(customers_sf),
+      progress = T
+  ) %>%
+    enframe(
+          name  = "distributor_id",
+          value = "customer_id"
+      ) %>%
+      unnest(customer_id)
+  
+  
+  shortest_network_sf <- st_connect(
+      x   = distributors_sf,
+      y   = customers_sf,
+      ids = network_ids
+  ) %>%
+    st_bind_cols(nodes_tbl) %>%
+      mutate(len = st_length(geometry)) %>%
+      relocate(len, .after = customer_id) %>%
+      
+      group_by(customer_id) %>%
+      filter(len == min(len)) %>%
+      ungroup()
+  
+  
+  
+  ### Visualize Trip Points ###
+  route_points_sf <- distributors_sf %>%
+    bind_rows(customers_sf) %>%
+    select(type, distributor_id, customer_id, everything()) %>%
+    
+    # Adding in the distributor where the customer belongs
+    left_join(
+        shortest_network_sf %>% 
+            select(distributor_id, customer_id) %>%
+            as_tibble() %>%
+            rename(distributor_to = distributor_id) %>%
+            select(-geometry),
+        by   = "customer_id"
+    ) %>%
+    
+    # Cleanup distributor_to
+    mutate(distributor_to = ifelse(is.na(distributor_to), distributor_id, distributor_to)) %>%
+    mutate(distributor_to = as.factor(distributor_to))
+  
+  
+  
+  
+  
+  ### osrmTrip() ###
+  warehouse_trips_tbl <- route_points_sf %>%
+    group_by(distributor_to) %>%
+    group_nest() %>%
+    mutate(trip = map(data, .f = osrmTrip))
+  
+  
+  
+  warehouse_trips_tbl %>%
+  
+    # Double unnest
+    select(-data) %>%
+    unnest(trip) %>%
+    unnest(trip) %>%
+    
+    # Get the 2nd item
+    group_by(distributor_to) %>%
+    slice(2) %>%
+    ungroup() %>%
+    
+    # Trick: Unnest wider
+    unnest_wider(trip) %>%
+    
+    # Add our costs
+    mutate(distance = round(distance * 0.621371, 1),
+           duration = round(duration, 0),
+           driver_cost = input$select_driver_cost,
+           cost_per_mile = round(2.90, 2),
+           `Total Cost`  = round(distance * cost_per_mile + driver_cost, 0)) %>%
+    rename(Distributor = distributor_to,
+           `Duration (minutes)` = duration,
+           `Distance (miles)` = distance,
+           `Driver Cost` = driver_cost,
+           `Cost per Mile` = cost_per_mile)
+  
+  
+  }, 
+  
+  ignoreNULL = FALSE
+)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Row {data-height=600}
+-------------------------------------
+### Geospatial Networks
+```{r}
+output$map_1 <- renderLeaflet({
+  
+  customers_sf    <- full_points_filtered() %>% filter(type == 'customer') %>% select(-distributor_id)
+  distributors_sf <- full_points_filtered() %>% filter(type == 'warehouse') %>% select(-customer_id)
+  
+  
+  ### NEAREST NEIGHBORS ###
+  network_ids <- st_nn(
+    x = distributors_sf,
+    y = customers_sf,
+    k = nrow(customers_sf),
+    progress = T
+  )
+  
+  
+  network_lines_sf <- st_connect(
+      x   = distributors_sf,
+      y   = customers_sf,
+      ids = network_ids
+  )
+  
+  
+  ### CONNECTING NODES & LINES ###
+  nodes_tbl <- st_nn(
+      x = distributors_sf,
+      y = customers_sf,
+      k = nrow(customers_sf),
+      progress = T
+  ) %>%
+    enframe(
+          name  = "distributor_id",
+          value = "customer_id"
+      ) %>%
+      unnest(customer_id)
+  
+  
+  shortest_network_sf <- st_connect(
+      x   = distributors_sf,
+      y   = customers_sf,
+      ids = network_ids
+  ) %>%
+    st_bind_cols(nodes_tbl) %>%
+      mutate(len = st_length(geometry)) %>%
+      relocate(len, .after = customer_id) %>%
+      
+      group_by(customer_id) %>%
+      filter(len == min(len)) %>%
+      ungroup()
+  
+  
+  
+  ### Visualize Trip Points ###
+  route_points_sf <- distributors_sf %>%
+    bind_rows(customers_sf) %>%
+    select(type, distributor_id, customer_id, everything()) %>%
+    
+    # Adding in the distributor where the customer belongs
+    left_join(
+        shortest_network_sf %>% 
+            select(distributor_id, customer_id) %>%
+            as_tibble() %>%
+            rename(distributor_to = distributor_id) %>%
+            select(-geometry),
+        by   = "customer_id"
+    ) %>%
+    
+    # Cleanup distributor_to
+    mutate(distributor_to = ifelse(is.na(distributor_to), distributor_id, distributor_to)) %>%
+    mutate(distributor_to = as.factor(distributor_to))
+  
+  
+  
+  
+  
+  ### osrmTrip() ###
+  warehouse_trips_tbl <- route_points_sf %>%
+    group_by(distributor_to) %>%
+    group_nest() %>%
+    mutate(trip = map(data, .f = osrmTrip))
+  
+  warehouse_trips_sf <- warehouse_trips_tbl %>%
+      
+    # Double unnest
+    select(-data) %>%
+    unnest(trip) %>%
+    unnest(trip) %>%
+    
+    # Get first item
+    group_by(distributor_to) %>%
+    slice(1) %>%
+    ungroup() %>%
+    
+    # Unnest sf object and convert to sf
+    unnest(trip) %>%
+    st_as_sf()
+  
+  
+  
+  
+  
+  map_random_1 <- 
+  mapview(
+    customers_sf,
+    col.region = "blue",
+    color      = "white",
+    layer.name = "Customers",
+    cex        = 12
+  ) +
+    mapview(
+        distributors_sf,
+        col.region = "magenta",
+        color      = "white",
+        layer.name = "Warehouses",
+        cex        = 20
+    ) +
+    mapview(
+        warehouse_trips_sf,
+        zcol = "distributor_to",
+        color = tidyquant::palette_dark()[c(1:10)],
+        layer.name = "Trip"
+    )
+  
+  map_random_1@map
+  })
+
+leafletOutput(outputId = "map_1")
+```
+
+
+Row {data-height=300}
+-------------------------------------
+### Trips & Cost
+```{r}
+output$dt_output_1 <- DT::renderDataTable(expr = {
+  
+  warehouse_trips_filtered()
+    
+  
+  
+})
+DTOutput(outputId = "dt_output_1")
+```
